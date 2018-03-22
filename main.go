@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
-	"os/exec"
-	"strings"
-
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/terraform"
+	"gopkg.in/yaml.v2"
+	"log"
+	"os/exec"
+	"strings"
 )
 
 func main() {
@@ -25,18 +25,44 @@ func main() {
 	})
 }
 
+func normalizeInput(input string) (string, error) {
+	var m map[interface{}]interface{}
+	err := yaml.Unmarshal([]byte(input), &m)
+	if err != nil {
+		return "", err
+	}
+	normalized, err := json.Marshal(&m)
+	if err != nil {
+		return "", err
+	}
+	return string(normalized), nil
+}
+
+func attemptNormalizeInput(input string) string {
+	if normalized, err := normalizeInput(input); err != nil {
+		return input
+	} else {
+		return normalized
+	}
+}
+
 func resourceManifest() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceManifestCreate,
 		Read:   resourceManifestRead,
 		Update: resourceManifestUpdate,
 		Delete: resourceManifestDelete,
-
 		Schema: map[string]*schema.Schema{
 			"content": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
+				StateFunc: func(thing interface{}) string {
+					return attemptNormalizeInput(thing.(string))
+				},
 			},
+		},
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
 		},
 	}
 }
