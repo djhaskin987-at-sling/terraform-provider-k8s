@@ -31,7 +31,7 @@ func normalizeInput(input string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	normalized, err := json.Marshal(&m)
+	normalized, err := yaml.Marshal(&m)
 	if err != nil {
 		return "", err
 	}
@@ -167,13 +167,15 @@ func resourceManifestDelete(d *schema.ResourceData, m interface{}) error {
 	return run(exec.Command("kubectl", args...))
 }
 
+var objectMetadataReadError error = fmt.Errorf("Object definition's metadata could not be read")
+
 func resourceManifestRead(d *schema.ResourceData, m interface{}) error {
 	resource, namespace, ok := resourceFromSelflink(d.Id())
 	if !ok {
 		return fmt.Errorf("invalid resource id: %s", d.Id())
 	}
 
-	args := []string{"get", "--ignore-not-found", resource}
+	args := []string{"get", "--export=true", "-o", "yaml", "--ignore-not-found", resource}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
@@ -184,8 +186,43 @@ func resourceManifestRead(d *schema.ResourceData, m interface{}) error {
 	if err := run(cmd); err != nil {
 		return err
 	}
-	if strings.TrimSpace(stdout.String()) == "" {
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
 		d.SetId("")
+		return nil
 	}
+	var definition map[string]interface{}
+	if err := yaml.Unmarshal([]byte(output), &definition); err != nil {
+		return err
+	}
+	metadata, ok := definition["metadata"]
+	if !ok {
+		return fmt.Errorf("Object's metadata couldn't be found in: %v", definition)
+	}
+	metadataMap, ok := metadata.(map[interface{}]interface{})
+	if !ok {
+		return fmt.Errorf("Object's metadata wasn't of the expected type: %v", metadata)
+	}
+	annotations, ok := metadataMap["annotations"]
+	if !ok {
+		return fmt.Errorf("Object's annotations couldn't be found in: %v", metadataMap)
+	}
+	annotationsMap, ok := annotations.(map[interface{}]interface{})
+	if !ok {
+		return fmt.Errorf("Object's annotations wasn't of the expected type: %v", annotations)
+	}
+	rawConfiguration, ok := annotationsMap["kubectl.kubernetes.io/last-applied-configuration"]
+	if !ok {
+		return fmt.Errorf("Object's 'kubectl.kubernetes.io/last-applied-configuration' annotation couldn't be found in: %v", annotationsMap)
+	}
+	rawConfigurationStr, ok := rawConfiguration.(string)
+	if !ok {
+		return fmt.Errorf("Annotation 'kubectl.kubernetes.io/last-applied-configuration' was of an unexpected type: %v", rawConfiguration)
+	}
+	normalized, err := normalizeInput(rawConfigurationStr)
+	if err != nil {
+		return err
+	}
+	d.Set("content", normalized)
 	return nil
 }
